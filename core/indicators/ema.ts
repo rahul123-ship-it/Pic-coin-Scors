@@ -1,1 +1,30 @@
-// GOAL: Calculate EMA values from a deterministic price series.\n// RESPONSIBILITY: Pure EMA mathematics only.\n// DOES NOT: Fetch prices, write data, or make trading decisions.\nexport function ema(values: number[], period: number): number[] {\n  // Reject invalid periods early so callers get a predictable failure.\n  if (period <= 0 || !Number.isInteger(period)) throw new Error("EMA period must be a positive integer");\n  // Return an empty series when there is not enough input data.\n  if (values.length === 0) return [];\n  // The standard smoothing factor gives newer prices more weight.\n  const multiplier = 2 / (period + 1);\n  // Seed the EMA with the first available price for streaming simplicity.\n  const result = [values[0]];\n  // Calculate each subsequent EMA from the previous EMA and current price.\n  for (let index = 1; index < values.length; index += 1) {\n    // Read the previous EMA once to keep the recurrence explicit.\n    const previous = result[index - 1];\n    // Apply the canonical EMA recurrence.\n    result.push((values[index] - previous) * multiplier + previous);\n  }\n  // Return one EMA value for every input price.\n  return result;\n}\n
+// GOAL: Calculate EMA values from a deterministic price series.
+// RESPONSIBILITY: Pure EMA mathematics only.
+// DOES NOT: Fetch prices, write data, or make trading decisions.
+export function ema(values: number[], period: number): number[] {
+  // Reject invalid periods early so callers get a predictable failure.
+  if (period <= 0 || !Number.isInteger(period)) {
+    throw new Error("EMA period must be a positive integer");
+  }
+
+  // Return an empty series when there is no input data.
+  if (values.length === 0) return [];
+
+  // The smoothing factor gives newer prices more weight.
+  const multiplier = 2 / (period + 1);
+
+  // Seed the EMA with the first available price.
+  const result = [values[0]];
+
+  // Calculate each later EMA from the previous EMA and current price.
+  for (let index = 1; index < values.length; index += 1) {
+    // Read the previous EMA so the recurrence is explicit.
+    const previous = result[index - 1];
+
+    // Apply the standard EMA recurrence.
+    result.push((values[index] - previous) * multiplier + previous);
+  }
+
+  // Return one EMA value for every input price.
+  return result;
+}

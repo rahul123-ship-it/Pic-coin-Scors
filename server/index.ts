@@ -1,1 +1,7 @@
-// GOAL: Provide the Cloudflare Worker entry point.\n// RESPONSIBILITY: Expose the Hono Fetch handler to the Worker runtime.\n// DOES NOT: Contain business logic.\nimport app from "./app";\n\n// Cloudflare calls this Fetch handler for every incoming request.\nexport default app;\n
+// GOAL: Provide the Cloudflare Worker entry point.
+// RESPONSIBILITY: Expose the Hono Fetch handler to the Worker runtime.
+// DOES NOT: Contain business logic.
+import app from "./app";
+
+// Cloudflare calls this Fetch handler for every incoming request.
+export default app;

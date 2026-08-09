@@ -1,1 +1,52 @@
-// GOAL: Calculate ATR as a normalized volatility measure.\n// RESPONSIBILITY: Compute true range and Wilder-style ATR from candles.\n// DOES NOT: Decide whether volatility is good or bad.\nimport type { Candle } from "../../types/market";\n\n// Return a value for every candle so downstream calculations stay index-aligned.\nexport function atr(candles: Candle[], period: number): number[] {\n  // Validate the requested lookback.\n  if (period <= 0 || !Number.isInteger(period)) throw new Error("ATR period must be a positive integer");\n  // No candles means no volatility values.\n  if (candles.length === 0) return [];\n  // Build true-range values from high, low, and previous close.\n  const ranges = candles.map((candle, index) => {\n    // The first candle has no previous close, so its range is high minus low.\n    if (index === 0) return candle.high - candle.low;\n    // Read the previous close for gap-aware true range.\n    const previousClose = candles[index - 1].close;\n    // True range is the largest of the three standard components.\n    return Math.max(candle.high - candle.low, Math.abs(candle.high - previousClose), Math.abs(candle.low - previousClose));\n  });\n  // Seed the first ATR with the average of the initial true ranges.\n  const seedCount = Math.min(period, ranges.length);\n  const seed = ranges.slice(0, seedCount).reduce((sum, value) => sum + value, 0) / seedCount;\n  // Store one ATR for each candle.\n  const result = [seed];\n  // Apply Wilder smoothing to later candles.\n  for (let index = 1; index < ranges.length; index += 1) {\n    // The first update after the seed uses the same smoothing recurrence.\n    const previous = result[index - 1];\n    // Wilder's ATR is a recursive moving average.\n    result.push((previous * (period - 1) + ranges[index]) / period);\n  }\n  // Return the volatility series.\n  return result;\n}\n
+// GOAL: Calculate ATR as a normalized volatility measure.
+// RESPONSIBILITY: Compute true range and Wilder-style ATR from candles.
+// DOES NOT: Decide whether volatility is good or bad.
+import type { Candle } from "../../types/market";
+
+// Calculate one ATR value per candle so indexes remain aligned.
+export function atr(candles: Candle[], period: number): number[] {
+  // Validate the requested lookback.
+  if (period <= 0 || !Number.isInteger(period)) {
+    throw new Error("ATR period must be a positive integer");
+  }
+
+  // Return no values when there are no candles.
+  if (candles.length === 0) return [];
+
+  // Build true-range values from high, low, and previous close.
+  const ranges = candles.map((candle, index) => {
+    // The first candle has no previous close.
+    if (index === 0) return candle.high - candle.low;
+
+    // Read the previous close for gap-aware true range.
+    const previousClose = candles[index - 1].close;
+
+    // True range is the largest of the three standard components.
+    return Math.max(
+      candle.high - candle.low,
+      Math.abs(candle.high - previousClose),
+      Math.abs(candle.low - previousClose),
+    );
+  });
+
+  // Seed the ATR with the average of the first lookback window.
+  const seedCount = Math.min(period, ranges.length);
+  const seed =
+    ranges.slice(0, seedCount).reduce((sum, value) => sum + value, 0) /
+    seedCount;
+
+  // Store one ATR for each candle.
+  const result = [seed];
+
+  // Apply Wilder smoothing to every later true range.
+  for (let index = 1; index < ranges.length; index += 1) {
+    // Read the previous ATR for the recursive calculation.
+    const previous = result[index - 1];
+
+    // Apply Wilder's recursive moving-average formula.
+    result.push((previous * (period - 1) + ranges[index]) / period);
+  }
+
+  // Return the volatility series.
+  return result;
+}

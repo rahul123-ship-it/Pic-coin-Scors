@@ -1,1 +1,21 @@
-// GOAL: Define the application's root route.\n// RESPONSIBILITY: Connect the TanStack Router route tree to the scanner page.\n// DOES NOT: Fetch market data directly.\nimport { createRootRoute, createRoute } from "@tanstack/react-router";\nimport { ScannerPage } from "./ScannerPage";\n\n// Create the root route that owns global application rendering.\nexport const rootRoute = createRootRoute();\n\n// Map the home URL to the scanner feature.\nexport const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: ScannerPage });\n\n// Build the small route tree used by the first production-shaped UI.\nexport const routeTree = rootRoute.addChildren([indexRoute]);\n
+// GOAL: Define the application's root route.
+// RESPONSIBILITY: Connect TanStack Router to the scanner page.
+// DOES NOT: Fetch market data directly.
+import { createRootRoute, createRoute } from "@tanstack/react-router";
+import { ScannerPage } from "./ScannerPage";
+
+// Create the root route that owns global application rendering.
+export const rootRoute = createRootRoute({
+  // Render a simple not-found message for unknown client routes.
+  notFoundComponent: () => <div className="empty">Page not found.</div>,
+});
+
+// Map the home URL to the scanner feature.
+export const indexRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/",
+  component: ScannerPage,
+});
+
+// Build the code-based route tree used by this MVP.
+export const routeTree = rootRoute.addChildren([indexRoute]);

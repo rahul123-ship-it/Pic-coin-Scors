@@ -1,1 +1,45 @@
-// GOAL: Define the normalized market objects used by the whole application.\n// RESPONSIBILITY: Keep exchange-specific response shapes outside the core engine.\n// DOES NOT: Call Delta Exchange, React, Hono, or a database.\nexport type Direction = "bullish" | "bearish" | "neutral";\n\n// A candle is the smallest time-series unit consumed by indicators.\nexport interface Candle {\n  time: number;\n  open: number;\n  high: number;\n  low: number;\n  close: number;\n  volume: number;\n}\n\n// A normalized ticker contains only fields the scanner actually needs.\nexport interface MarketTicker {\n  symbol: string;\n  lastPrice: number;\n  change24h: number;\n  volume24h: number;\n  turnover24h: number;\n}\n\n// A normalized product describes an eligible Delta market.\nexport interface MarketProduct {\n  id: number;\n  symbol: string;\n  contractType: string;\n  state: string;\n  tradingStatus: string;\n}\n\n// The trend engine returns an explainable analytical result.\nexport interface TrendResult {\n  symbol: string;\n  direction: Direction;\n  score: number;\n  ema9: number;\n  ema15: number;\n  ema200: number;\n  atrPercent: number;\n  rvol: number;\n  reasons: string[];\n}\n
+// GOAL: Define the normalized market objects used by the whole application.
+// RESPONSIBILITY: Keep exchange-specific response shapes outside the core engine.
+// DOES NOT: Call Delta Exchange, React, Hono, or a database.
+export type Direction = "bullish" | "bearish" | "neutral";
+
+// A candle is the smallest time-series unit consumed by indicators.
+export interface Candle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+// A normalized ticker contains only fields the scanner actually needs.
+export interface MarketTicker {
+  symbol: string;
+  lastPrice: number;
+  change24h: number;
+  volume24h: number;
+  turnover24h: number;
+}
+
+// A normalized product describes an eligible Delta market.
+export interface MarketProduct {
+  id: number;
+  symbol: string;
+  contractType: string;
+  state: string;
+  tradingStatus: string;
+}
+
+// The trend engine returns an explainable analytical result.
+export interface TrendResult {
+  symbol: string;
+  direction: Direction;
+  score: number;
+  ema9: number;
+  ema15: number;
+  ema200: number;
+  atrPercent: number;
+  rvol: number;
+  reasons: string[];
+}
