@@ -91,7 +91,20 @@ export function ScannerPage() {
     );
   }
 
-  // Read the successful response after the loading and error guards.
+  // Keep the UI defensive even after the loading/error guards because query data is optional by type.
+  if (!query.data) {
+    return (
+      <main className="shell">
+        <section className="hero">
+          <p className="eyebrow">SCANNER ERROR</p>
+          <h1>No scanner data was returned.</h1>
+          <button onClick={() => query.refetch()}>Retry scan</button>
+        </section>
+      </main>
+    );
+  }
+
+  // Read the validated response after all defensive guards have passed.
   const markets = query.data.markets;
 
   // Render the dashboard.
