@@ -19,11 +19,11 @@ jobs:
     steps:
       # Download the exact repository revision being validated.
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Install the requested Node.js major version consistently.
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
 
