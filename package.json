@@ -1,0 +1,11 @@
+{
+  "name": "pic-coin-scors",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  }
+}
