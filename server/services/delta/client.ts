@@ -1,82 +1,163 @@
 // GOAL: Isolate every Delta Exchange HTTP detail from the rest of the application.
-// RESPONSIBILITY: Fetch products, tickers, and historical candles and normalize them.
+// RESPONSIBILITY: Fetch, validate, normalize, and safely retry public market data.
 // DOES NOT: Calculate indicators or make trading decisions.
-import type { Candle, MarketProduct, MarketTicker } from "../../types/market";
+import { z } from "zod";
+import type { Candle, MarketProduct, MarketTicker } from "../../../types/market";
 
-// Use the India production API because this project targets Delta Exchange India.
+// Use Delta Exchange India's production API because this scanner targets Delta India.
 const BASE_URL = "https://api.india.delta.exchange";
 
-type DeltaEnvelope<T> = {
-  success?: boolean;
-  result?: T;
-  meta?: unknown;
-};
+// Keep retries small so an exchange incident cannot create a retry storm.
+const MAX_RETRIES = 2;
 
-type DeltaProduct = {
-  id: number;
-  symbol: string;
-  contract_type: string;
-  state: string;
-  trading_status: string;
-};
+// Abort one provider request after ten seconds instead of hanging a scan indefinitely.
+const REQUEST_TIMEOUT_MS = 10_000;
 
-type DeltaTicker = {
-  symbol: string;
-  close?: number;
-  ltp_change_24h?: string;
-  volume?: number;
-  turnover_usd?: number;
-  turnover?: number;
-};
+// Keep provider backoff bounded so a single request cannot block the whole scanner.
+const MAX_RETRY_DELAY_MS = 5_000;
 
-type DeltaCandle = {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume?: number;
-};
+// Validate the response envelope at runtime because TypeScript types cannot validate JSON.
+const envelopeSchema = <T extends z.ZodType>(resultSchema: T) =>
+  z.object({
+    success: z.boolean().optional(),
+    result: resultSchema.optional(),
+    meta: z.unknown().optional(),
+  });
 
-// Perform one safe JSON GET request with a timeout.
-async function getJson<T>(path: string): Promise<T> {
-  // Abort slow provider calls so a dead exchange cannot hang the scanner forever.
-  const controller = new AbortController();
+// Validate only fields that the application actually consumes from a Delta product.
+const productSchema = z.object({
+  id: z.coerce.number(),
+  symbol: z.string().min(1),
+  contract_type: z.string(),
+  state: z.string(),
+  trading_status: z.string(),
+});
 
-  // Give the provider ten seconds before failing the request.
-  const timer = setTimeout(() => controller.abort(), 10_000);
+// Provider ticker values can be strings or numbers, so coerce them at the boundary.
+const tickerSchema = z.object({
+  symbol: z.string().min(1),
+  close: z.coerce.number().optional(),
+  ltp_change_24h: z.coerce.number().optional(),
+  volume: z.coerce.number().optional(),
+  turnover_usd: z.coerce.number().optional(),
+  turnover: z.coerce.number().optional(),
+});
 
-  try {
-    // Ask the provider for JSON and identify the request as public market data.
-    const response = await fetch(`${BASE_URL}${path}`, {
-      headers: { Accept: "application/json" },
-      signal: controller.signal,
-    });
+// Historical candle fields are normalized to finite numbers before entering core code.
+const candleSchema = z.object({
+  time: z.coerce.number(),
+  open: z.coerce.number(),
+  high: z.coerce.number(),
+  low: z.coerce.number(),
+  close: z.coerce.number(),
+  volume: z.coerce.number().optional(),
+});
 
-    // Convert non-2xx responses into useful server-side failures.
-    if (!response.ok) {
-      throw new Error(`Delta API returned HTTP ${response.status}`);
-    }
+// Sleep without blocking the Worker event loop so retries remain asynchronous.
+async function sleep(milliseconds: number): Promise<void> {
+  // Resolve after the requested backoff interval.
+  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
 
-    // Parse the provider response exactly once at the boundary.
-    return (await response.json()) as T;
-  } finally {
-    // Always clear the timer so completed requests do not leak timers.
-    clearTimeout(timer);
+// Calculate a bounded retry delay, preferring Delta's explicit rate-limit reset when present.
+function retryDelay(attempt: number, resetHeader: string | null): number {
+  // Delta documents this header as milliseconds until the next request may be made.
+  const providerDelay = Number(resetHeader ?? "NaN");
+
+  // Respect a valid provider delay but cap it for predictable application latency.
+  if (Number.isFinite(providerDelay) && providerDelay >= 0) {
+    return Math.min(providerDelay, MAX_RETRY_DELAY_MS);
   }
+
+  // Fall back to exponential backoff when the provider gives no reset hint.
+  return Math.min(500 * 2 ** attempt, MAX_RETRY_DELAY_MS);
+}
+
+// Perform one runtime-validated JSON GET with timeout and transient-error retry handling.
+async function getJson<T>(path: string, schema: z.ZodType<T>): Promise<T> {
+  // Try the request once plus the configured number of retries.
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+    // Create a fresh abort controller for every attempt.
+    const controller = new AbortController();
+
+    // Abort slow provider calls after the configured timeout.
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    try {
+      // Request public JSON data without exposing any private API credentials.
+      const response = await fetch(`${BASE_URL}${path}`, {
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
+      });
+
+      // Retry only failures that are plausibly transient at the transport/provider layer.
+      const retryable = response.status === 429 || response.status >= 500;
+
+      // Convert permanent HTTP failures into a clear provider error immediately.
+      if (!response.ok && !retryable) {
+        throw new Error(`Delta API returned HTTP ${response.status}`);
+      }
+
+      // Retry a rate limit or server outage while attempts remain.
+      if (!response.ok && retryable) {
+        if (attempt === MAX_RETRIES) {
+          throw new Error(`Delta API unavailable after ${MAX_RETRIES + 1} attempts`);
+        }
+
+        // Wait before retrying and then continue the attempt loop.
+        await sleep(retryDelay(attempt, response.headers.get("X-RATE-LIMIT-RESET")));
+        continue;
+      }
+
+      // Parse JSON exactly once at the provider boundary.
+      const raw: unknown = await response.json();
+
+      // Validate the response before application code can consume it.
+      const parsed = schema.safeParse(raw);
+
+      // Reject malformed provider responses instead of allowing undefined values downstream.
+      if (!parsed.success) {
+        throw new Error("Delta API returned an unexpected response shape");
+      }
+
+      // Return the validated provider response.
+      return parsed.data;
+    } catch (error) {
+      // Abort errors are retryable because they represent a timed-out provider request.
+      const retryableError =
+        error instanceof Error &&
+        (error.name === "AbortError" || /network|fetch/i.test(error.message));
+
+      // Retry transient network failures while attempts remain.
+      if (retryableError && attempt < MAX_RETRIES) {
+        await sleep(retryDelay(attempt, null));
+        continue;
+      }
+
+      // Preserve the original error for server-side diagnostics.
+      throw error;
+    } finally {
+      // Always clear the timeout, including successful and failed attempts.
+      clearTimeout(timer);
+    }
+  }
+
+  // This point is unreachable, but keeps TypeScript's control-flow analysis explicit.
+  throw new Error("Delta request failed unexpectedly");
 }
 
 // Fetch live perpetual products that are currently operational.
 export async function getPerpetualProducts(): Promise<MarketProduct[]> {
-  // Delta supports filtering directly, reducing unnecessary payloads.
-  const response = await getJson<DeltaEnvelope<DeltaProduct[]>>(
+  // Validate the entire provider envelope before mapping it.
+  const response = await getJson(
     "/v2/products?contract_types=perpetual_futures&states=live&page_size=100",
+    envelopeSchema(z.array(productSchema)),
   );
 
   // Treat an absent result as an empty provider response.
   const products = response.result ?? [];
 
-  // Normalize provider naming into the application's naming convention.
+  // Normalize provider naming into the application's domain naming convention.
   return products
     .filter((product) => product.trading_status === "operational")
     .map((product) => ({
@@ -90,18 +171,29 @@ export async function getPerpetualProducts(): Promise<MarketProduct[]> {
 
 // Fetch all live perpetual tickers in one public request.
 export async function getPerpetualTickers(): Promise<MarketTicker[]> {
-  // Ask Delta to return only perpetual-futures contracts.
-  const response = await getJson<DeltaEnvelope<DeltaTicker[]>>(
+  // Validate every ticker before normalizing it.
+  const response = await getJson(
     "/v2/tickers?contract_types=perpetual_futures",
+    envelopeSchema(z.array(tickerSchema)),
   );
 
-  // Normalize every ticker and discard malformed records.
+  // Normalize provider fields and discard records without a usable live price.
   return (response.result ?? []).flatMap((ticker) => {
     // Convert optional provider values into safe numbers.
-    const lastPrice = Number(ticker.close ?? 0);
+    const lastPrice = ticker.close ?? 0;
+    const change24h = ticker.ltp_change_24h ?? 0;
+    const volume24h = ticker.volume ?? 0;
+    const turnover24h = ticker.turnover_usd ?? ticker.turnover ?? 0;
 
-    // Ignore records without a usable symbol or price.
-    if (!ticker.symbol || !Number.isFinite(lastPrice) || lastPrice <= 0) {
+    // Reject non-finite or non-positive market values before ranking.
+    if (
+      !Number.isFinite(lastPrice) ||
+      lastPrice <= 0 ||
+      !Number.isFinite(change24h) ||
+      !Number.isFinite(volume24h) ||
+      !Number.isFinite(turnover24h) ||
+      turnover24h < 0
+    ) {
       return [];
     }
 
@@ -110,9 +202,9 @@ export async function getPerpetualTickers(): Promise<MarketTicker[]> {
       {
         symbol: ticker.symbol,
         lastPrice,
-        change24h: Number(ticker.ltp_change_24h ?? 0),
-        volume24h: Number(ticker.volume ?? 0),
-        turnover24h: Number(ticker.turnover_usd ?? ticker.turnover ?? 0),
+        change24h,
+        volume24h,
+        turnover24h,
       },
     ];
   });
@@ -131,13 +223,13 @@ export async function getCandles(
   // End the request at the current Unix timestamp.
   const end = Math.floor(Date.now() / 1000);
 
-  // Keep the request within Delta's documented 2000-candle response maximum.
+  // Keep each request within Delta's documented candle response limit.
   const count = Math.min(Math.max(lookbackCandles, 200), 2000);
 
   // Calculate the start timestamp from the requested number of candles.
   const start = end - secondsPerCandle * count;
 
-  // Encode query parameters safely.
+  // Encode query parameters safely instead of concatenating user-controlled values.
   const params = new URLSearchParams({
     resolution,
     symbol,
@@ -145,20 +237,21 @@ export async function getCandles(
     end: String(end),
   });
 
-  // Fetch the historical OHLC response.
-  const response = await getJson<DeltaEnvelope<DeltaCandle[]>>(
+  // Validate the historical OHLC response at the exchange boundary.
+  const response = await getJson(
     `/v2/history/candles?${params.toString()}`,
+    envelopeSchema(z.array(candleSchema)),
   );
 
   // Normalize and sort candles from oldest to newest.
   return (response.result ?? [])
     .map((candle) => ({
-      time: Number(candle.time),
-      open: Number(candle.open),
-      high: Number(candle.high),
-      low: Number(candle.low),
-      close: Number(candle.close),
-      volume: Number(candle.volume ?? 0),
+      time: candle.time,
+      open: candle.open,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close,
+      volume: candle.volume ?? 0,
     }))
     .filter(
       (candle) =>
@@ -166,7 +259,8 @@ export async function getCandles(
         Number.isFinite(candle.open) &&
         Number.isFinite(candle.high) &&
         Number.isFinite(candle.low) &&
-        Number.isFinite(candle.close),
+        Number.isFinite(candle.close) &&
+        Number.isFinite(candle.volume),
     )
     .sort((a, b) => a.time - b.time);
 }
