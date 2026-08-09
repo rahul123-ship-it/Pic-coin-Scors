@@ -1,7 +1,8 @@
 // GOAL: Orchestrate provider data and the pure trend engine for the scanner API.
-// RESPONSIBILITY: Select liquid markets, calculate trends, and return safe DTOs.
+// RESPONSIBILITY: Select liquid markets, validate candle quality, calculate trends, and return safe DTOs.
 // DOES NOT: Render UI or expose provider-specific response shapes.
 import { Hono } from "hono";
+import { closedCandles, normalizeCandles } from "../../core/indicators/validation";
 import { calculateTrend } from "../../core/trend/trend-engine";
 import {
   getCandles,
@@ -11,6 +12,9 @@ import {
 
 // Create a small router so the Hono application stays modular.
 export const scannerRoute = new Hono();
+
+// Keep the first production scan bounded so provider latency remains predictable.
+const MAX_MARKETS_PER_SCAN = 12;
 
 // Return ranked live markets for the dashboard.
 scannerRoute.get("/", async (context) => {
@@ -41,23 +45,29 @@ scannerRoute.get("/", async (context) => {
       } => item !== null,
     );
 
-  // Sort by turnover because raw contract volume is not comparable across instruments.
+  // Sort by Delta turnover because raw contract volume is not comparable across coins.
   eligible.sort((a, b) => b.ticker.turnover24h - a.ticker.turnover24h);
 
-  // Limit candle analysis to the most liquid 12 markets for predictable latency.
-  const candidates = eligible.slice(0, 12);
+  // Limit candle analysis so one scan cannot create unbounded provider work.
+  const candidates = eligible.slice(0, MAX_MARKETS_PER_SCAN);
 
-  // Calculate each market independently so one malformed market does not kill the scan.
+  // Calculate each market independently so one bad market cannot kill the entire scan.
   const results = await Promise.all(
     candidates.map(async ({ product, ticker }) => {
       try {
-        // Use 15-minute candles for the first trend-ranking version.
-        const candles = await getCandles(product.symbol, "15m", 240);
+        // Request 15-minute history because this first scanner uses 15m as market context.
+        const rawCandles = await getCandles(product.symbol, "15m", 240);
 
-        // Require enough data for EMA-200.
+        // Remove malformed records and duplicate timestamps before calculations.
+        const normalizedCandles = normalizeCandles(rawCandles);
+
+        // Exclude the currently forming candle so signals cannot repaint before candle close.
+        const candles = closedCandles(normalizedCandles, 15 * 60);
+
+        // Require enough closed data for EMA-200 and the trend engine's other windows.
         if (candles.length < 200) return null;
 
-        // Run the framework-independent trend engine.
+        // Run the framework-independent trend engine only on trusted closed data.
         const trend = calculateTrend(product.symbol, candles);
 
         // Return market context together with the analytical result.
