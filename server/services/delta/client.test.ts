@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getPerpetualProducts } from "./client";
+import { clearDeltaCache, getPerpetualProducts } from "./client";
 
 describe("Delta provider client", () => {
-  // Restore the global fetch implementation after each isolated provider test.
+  // Restore the global fetch implementation and clear process-local cache after each isolated test.
   afterEach(() => {
+    clearDeltaCache();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -41,6 +42,24 @@ describe("Delta provider client", () => {
         tradingStatus: "operational",
       },
     ]);
+  });
+
+  // Repeated product reads should use the short-lived stable-data cache.
+  it("caches the product universe between reads", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true, result: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    // Replace the network boundary with a deterministic successful response.
+    vi.stubGlobal("fetch", fetchMock);
+
+    // The first call populates the cache and the second call should reuse it.
+    await expect(getPerpetualProducts()).resolves.toEqual([]);
+    await expect(getPerpetualProducts()).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   // A temporary server failure should be retried instead of immediately breaking the scan.
