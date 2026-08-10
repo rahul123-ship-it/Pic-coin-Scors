@@ -19,9 +19,6 @@ const MAX_RETRY_DELAY_MS = 5_000;
 // Products change slowly, so do not fetch the exchange universe on every dashboard refresh.
 const PRODUCTS_CACHE_TTL_MS = 5 * 60_000;
 
-// Give the ticker endpoint no cache because the dashboard uses it as the live price snapshot.
-const TICKERS_CACHE_TTL_MS = 0;
-
 // Small safety margin after a candle boundary gives the exchange time to publish the closed candle.
 const CANDLE_CACHE_GRACE_MS = 5_000;
 
@@ -33,6 +30,15 @@ type CacheEntry<T> = {
 // Keep the process-local cache deliberately small and scoped to this provider module.
 const productsCache: { entry: CacheEntry<MarketProduct[]> | null } = { entry: null };
 const candlesCache = new Map<string, CacheEntry<Candle[]>>();
+
+// Clear process-local provider caches so tests can isolate each network scenario deterministically.
+export function clearDeltaCache(): void {
+  // Remove the stable product-universe snapshot.
+  productsCache.entry = null;
+
+  // Remove every timeframe/symbol candle snapshot.
+  candlesCache.clear();
+}
 
 // Validate the response envelope at runtime because TypeScript types cannot validate JSON.
 const envelopeSchema = <T extends z.ZodType>(resultSchema: T) =>
@@ -203,11 +209,6 @@ export async function getPerpetualProducts(): Promise<MarketProduct[]> {
 
 // Fetch all live perpetual tickers in one public request.
 export async function getPerpetualTickers(): Promise<MarketTicker[]> {
-  // Keep this endpoint uncached because its purpose is the live market snapshot.
-  if (TICKERS_CACHE_TTL_MS > 0) {
-    // The branch is intentionally disabled until a live ticker cache policy is defined.
-  }
-
   // Validate every ticker before normalizing it.
   const response = await getJson(
     "/v2/tickers?contract_types=perpetual_futures",
