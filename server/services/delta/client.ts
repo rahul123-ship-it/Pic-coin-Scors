@@ -1,5 +1,5 @@
 // GOAL: Isolate every Delta Exchange HTTP detail from the rest of the application.
-// RESPONSIBILITY: Fetch, validate, normalize, and safely retry public market data.
+// RESPONSIBILITY: Fetch, validate, normalize, safely retry, and lightly cache public market data.
 // DOES NOT: Calculate indicators or make trading decisions.
 import { z } from "zod";
 import type { Candle, MarketProduct, MarketTicker } from "../../../types/market";
@@ -15,6 +15,24 @@ const REQUEST_TIMEOUT_MS = 10_000;
 
 // Keep provider backoff bounded so a single request cannot block the whole scanner.
 const MAX_RETRY_DELAY_MS = 5_000;
+
+// Products change slowly, so do not fetch the exchange universe on every dashboard refresh.
+const PRODUCTS_CACHE_TTL_MS = 5 * 60_000;
+
+// Give the ticker endpoint no cache because the dashboard uses it as the live price snapshot.
+const TICKERS_CACHE_TTL_MS = 0;
+
+// Small safety margin after a candle boundary gives the exchange time to publish the closed candle.
+const CANDLE_CACHE_GRACE_MS = 5_000;
+
+type CacheEntry<T> = {
+  value: T;
+  expiresAt: number;
+};
+
+// Keep the process-local cache deliberately small and scoped to this provider module.
+const productsCache: { entry: CacheEntry<MarketProduct[]> | null } = { entry: null };
+const candlesCache = new Map<string, CacheEntry<Candle[]>>();
 
 // Validate the response envelope at runtime because TypeScript types cannot validate JSON.
 const envelopeSchema = <T extends z.ZodType>(resultSchema: T) =>
@@ -148,6 +166,11 @@ async function getJson<T>(path: string, schema: z.ZodType<T>): Promise<T> {
 
 // Fetch live perpetual products that are currently operational.
 export async function getPerpetualProducts(): Promise<MarketProduct[]> {
+  // Return the stable exchange universe while its short cache is still valid.
+  if (productsCache.entry && productsCache.entry.expiresAt > Date.now()) {
+    return productsCache.entry.value;
+  }
+
   // Validate the entire provider envelope before mapping it.
   const response = await getJson(
     "/v2/products?contract_types=perpetual_futures&states=live&page_size=100",
@@ -158,7 +181,7 @@ export async function getPerpetualProducts(): Promise<MarketProduct[]> {
   const products = response.result ?? [];
 
   // Normalize provider naming into the application's domain naming convention.
-  return products
+  const normalized = products
     .filter((product) => product.trading_status === "operational")
     .map((product) => ({
       id: product.id,
@@ -167,10 +190,24 @@ export async function getPerpetualProducts(): Promise<MarketProduct[]> {
       state: product.state,
       tradingStatus: product.trading_status,
     }));
+
+  // Cache the normalized universe only after the provider response has passed validation.
+  productsCache.entry = {
+    value: normalized,
+    expiresAt: Date.now() + PRODUCTS_CACHE_TTL_MS,
+  };
+
+  // Return a stable normalized product list to the scanner.
+  return normalized;
 }
 
 // Fetch all live perpetual tickers in one public request.
 export async function getPerpetualTickers(): Promise<MarketTicker[]> {
+  // Keep this endpoint uncached because its purpose is the live market snapshot.
+  if (TICKERS_CACHE_TTL_MS > 0) {
+    // The branch is intentionally disabled until a live ticker cache policy is defined.
+  }
+
   // Validate every ticker before normalizing it.
   const response = await getJson(
     "/v2/tickers?contract_types=perpetual_futures",
@@ -220,6 +257,15 @@ export async function getCandles(
   const secondsPerCandle =
     resolution === "3m" ? 180 : resolution === "5m" ? 300 : 900;
 
+  // Use a stable cache key for each symbol/timeframe/lookback combination.
+  const cacheKey = `${symbol}:${resolution}:${lookbackCandles}`;
+  const cached = candlesCache.get(cacheKey);
+
+  // Reuse history until the next timeframe boundary plus a short provider-publish grace period.
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
   // End the request at the current Unix timestamp.
   const end = Math.floor(Date.now() / 1000);
 
@@ -244,7 +290,7 @@ export async function getCandles(
   );
 
   // Normalize and sort candles from oldest to newest.
-  return (response.result ?? [])
+  const normalized = (response.result ?? [])
     .map((candle) => ({
       time: candle.time,
       open: candle.open,
@@ -263,4 +309,14 @@ export async function getCandles(
         Number.isFinite(candle.volume),
     )
     .sort((a, b) => a.time - b.time);
+
+  // Refresh shortly after the next timeframe boundary so a newly closed candle can arrive.
+  const nextBoundarySeconds = (Math.floor(end / secondsPerCandle) + 1) * secondsPerCandle;
+  candlesCache.set(cacheKey, {
+    value: normalized,
+    expiresAt: nextBoundarySeconds * 1000 + CANDLE_CACHE_GRACE_MS,
+  });
+
+  // Return the validated and chronologically ordered candle series.
+  return normalized;
 }
