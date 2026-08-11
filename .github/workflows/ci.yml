@@ -1,0 +1,48 @@
+# This workflow protects the project from merging code that does not build.
+name: CI
+
+# Run validation for pushes and pull requests.
+on:
+  push:
+    branches: [main, mvp-live-scanner]
+  pull_request:
+
+# Give the workflow only the repository permissions it needs.
+permissions:
+  contents: read
+
+# Run one clean validation job on GitHub's Linux runner.
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Download the exact repository revision being validated.
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      # Install the requested Node.js major version consistently.
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # Install dependencies from package.json because the project does not have a lockfile yet.
+      - name: Install dependencies
+        run: npm install
+
+      # Catch TypeScript errors before the code reaches production.
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Catch code-quality and correctness issues enforced by ESLint.
+      - name: Lint
+        run: npm run lint
+
+      # Run deterministic unit and integration tests.
+      - name: Test
+        run: npm test -- --run
+
+      # Prove that the production bundle can actually be generated.
+      - name: Build
+        run: npm run build
