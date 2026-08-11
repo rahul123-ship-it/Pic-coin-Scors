@@ -31,14 +31,18 @@ export interface MarketProduct {
   tradingStatus: string;
 }
 
-// The trend engine returns an explainable analytical result.
+// A trend result is deliberately explainable so the UI can show why a coin ranked highly.
 export interface TrendResult {
   symbol: string;
   direction: Direction;
+  crossover: Direction;
   score: number;
+  trendStrength: number;
   ema9: number;
   ema15: number;
   ema200: number;
+  emaSpreadPercent: number;
+  emaSpreadAtr: number;
   atrPercent: number;
   rvol: number;
   reasons: string[];
