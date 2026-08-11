@@ -28,6 +28,9 @@ describe("calculateTrend", () => {
 
     expect(result.direction).toBe("bullish");
     expect(result.score).toBeGreaterThan(0);
+    expect(result.trendStrength).toBeGreaterThan(0);
+    expect(result.emaSpreadPercent).toBeGreaterThan(0);
+    expect(result.emaSpreadAtr).toBeGreaterThan(0);
     expect(Number.isFinite(result.ema9)).toBe(true);
     expect(Number.isFinite(result.ema15)).toBe(true);
     expect(Number.isFinite(result.ema200)).toBe(true);
@@ -39,6 +42,14 @@ describe("calculateTrend", () => {
 
     expect(result.direction).toBe("bearish");
     expect(result.score).toBeGreaterThan(0);
+  });
+
+  // A crossover should be detected only when the closed-candle EMA ordering changes.
+  it("reports the current crossover state", () => {
+    const result = calculateTrend("TESTUSD", makeCandles("up"));
+
+    // The smooth rising series has already crossed, so the current state is neutral for 'new crossover'.
+    expect(result.crossover).toBe("neutral");
   });
 
   // The engine must refuse insufficient history instead of inventing an EMA-200 state.
