@@ -1,9 +1,10 @@
 // GOAL: Orchestrate provider data and the pure trend engine for the scanner API.
-// RESPONSIBILITY: Select liquid markets, validate candle quality, calculate trends, and return safe DTOs.
+// RESPONSIBILITY: Select liquid markets, validate candle quality, calculate trends, qualify trend regimes, and return safe DTOs.
 // DOES NOT: Render UI or expose provider-specific response shapes.
 import { Hono } from "hono";
 import { closedCandles, normalizeCandles } from "../../core/indicators/validation";
 import { calculateTrend } from "../../core/trend/trend-engine";
+import { qualifyTrend } from "../../core/trend/trend-qualification";
 import {
   getCandles,
   getPerpetualProducts,
@@ -70,9 +71,13 @@ scannerRoute.get("/", async (context) => {
         // Run the framework-independent trend engine only on trusted closed data.
         const trend = calculateTrend(product.symbol, candles);
 
-        // Return market context together with the analytical result.
+        // Apply explicit quality gates without changing the underlying trend measurements.
+        const qualification = qualifyTrend(trend);
+
+        // Return market context, trend measurements, and the qualification decision.
         return {
           ...trend,
+          qualification,
           price: ticker.lastPrice,
           change24h: ticker.change24h,
           turnover24h: ticker.turnover24h,
@@ -87,10 +92,18 @@ scannerRoute.get("/", async (context) => {
     }),
   );
 
-  // Remove failed market calculations and rank strongest trends first.
+  // Remove failed market calculations and rank qualified trends before weaker candidates.
   const ranked = results
     .filter((item): item is NonNullable<(typeof results)[number]> => item !== null)
-    .sort((a, b) => b.score - a.score);
+    .sort((a, b) => {
+      // Qualified markets should appear first because they passed every trend-quality gate.
+      if (a.qualification.qualified !== b.qualification.qualified) {
+        return Number(b.qualification.qualified) - Number(a.qualification.qualified);
+      }
+
+      // Within the same regime, preserve the strongest score first.
+      return b.score - a.score;
+    });
 
   // Return a stable API envelope for TanStack Query.
   return context.json({
